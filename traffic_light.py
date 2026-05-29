@@ -4,6 +4,9 @@ import os
 import time
 import tkinter as tk
 
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
 STATUS_FILE = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), ".claude-traffic-light-status.json")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".claude-traffic-light-config.json")
 
@@ -213,13 +216,39 @@ class TkinterApp:
         self.root.destroy()
 
 
+class StatusWatcher(FileSystemEventHandler):
+    def __init__(self, file_path, callback):
+        self._file_path = os.path.abspath(file_path)
+        self._callback = callback
+        self._observer = Observer()
+        watch_dir = os.path.dirname(self._file_path)
+        self._observer.schedule(self, watch_dir, recursive=False)
+
+    def on_modified(self, event):
+        if os.path.abspath(event.src_path) == self._file_path:
+            status = read_status()
+            if status:
+                self._callback(status)
+
+    def start(self):
+        self._observer.start()
+
+    def stop(self):
+        self._observer.stop()
+        self._observer.join()
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "--test-ui":
         app = TkinterApp()
-        app.update_state("coding")
-        app.root.after(5000, lambda: app.update_state("waiting"))
-        app.root.after(10000, lambda: app.update_state("done"))
+
+        def on_status(status):
+            app.update_state(status["state"])
+
+        watcher = StatusWatcher(STATUS_FILE, on_status)
+        watcher.start()
+        app.root.protocol("WM_DELETE_WINDOW", lambda: (watcher.stop(), app.quit()))
         app.run()
     else:
         result = read_status()
