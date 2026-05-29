@@ -20,24 +20,28 @@ CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".claude-traffic-light-confi
 CLAUDE_SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
 
 STATE_COLORS = {
+    "thinking": "#40c4ff",
     "coding": "#00e676",
     "waiting": "#ffd740",
     "done": "#ff5252",
 }
 
 STATE_LABELS = {
+    "thinking": "THINKING",
     "coding": "CODING",
     "waiting": "WAITING",
     "done": "COMPLETE",
 }
 
 STATE_LABELS_ZH = {
+    "thinking": "思考中",
     "coding": "编码中",
     "waiting": "等待操作",
     "done": "编码完成",
 }
 
 HOOKS_CONFIG = {
+    "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'thinking','timestamp':int(time.time())}))\""}]}],
     "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'coding','timestamp':int(time.time())}))\""}]}],
     "Notification": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'waiting','timestamp':int(time.time())}))\""}]}],
     "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'done','timestamp':int(time.time())}))\""}]}],
