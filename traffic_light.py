@@ -7,6 +7,7 @@ import tkinter as tk
 import winsound
 
 import pystray
+import pygame
 from PIL import Image, ImageDraw
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -44,6 +45,42 @@ def write_status(state, message=""):
     data = {"state": state, "timestamp": int(time.time()), "message": message}
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f)
+
+
+SONAR_MP3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "0002869.mp3")
+
+pygame.mixer.init()
+
+
+class SonarPlayer:
+    def __init__(self):
+        self._playing = False
+        self._sonar_on = True
+
+    @property
+    def sonar_on(self):
+        return self._sonar_on
+
+    @sonar_on.setter
+    def sonar_on(self, value):
+        self._sonar_on = value
+        if not value:
+            self.stop()
+
+    def start(self):
+        if self._playing or not self._sonar_on:
+            return
+        self._playing = True
+        try:
+            pygame.mixer.music.load(SONAR_MP3)
+            pygame.mixer.music.play(loops=-1)
+        except pygame.error:
+            self._playing = False
+
+    def stop(self):
+        if self._playing:
+            pygame.mixer.music.stop()
+        self._playing = False
 
 
 class TkinterApp:
@@ -322,14 +359,16 @@ class StatusWatcher(FileSystemEventHandler):
 
 class TrayIcon:
     def __init__(self, on_quit, on_toggle_sound, on_toggle_notification,
-                 on_set_speed):
+                 on_set_speed, on_toggle_sonar):
         self._on_quit = on_quit
         self._on_toggle_sound = on_toggle_sound
         self._on_toggle_notification = on_toggle_notification
         self._on_set_speed = on_set_speed
+        self._on_toggle_sonar = on_toggle_sonar
         self._current_state = "coding"
         self._sound_on = True
         self._notification_on = True
+        self._sonar_on = True
         self._icon = pystray.Icon(
             "traffic_light",
             self._create_icon_image(STATE_COLORS["coding"]),
@@ -359,6 +398,10 @@ class TrayIcon:
                 lambda text: f"通知: {'开启' if self._notification_on else '关闭'}",
                 self._toggle_notification
             ),
+            pystray.MenuItem(
+                lambda text: f"声纳: {'开启' if self._sonar_on else '关闭'}",
+                self._toggle_sonar
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("闪烁速度: 快", lambda _: self._on_set_speed("fast")),
             pystray.MenuItem("闪烁速度: 中", lambda _: self._on_set_speed("medium")),
@@ -382,6 +425,11 @@ class TrayIcon:
     def _toggle_notification(self, icon, item):
         self._notification_on = not self._notification_on
         self._on_toggle_notification(self._notification_on)
+        self._icon.menu = self._build_menu()
+
+    def _toggle_sonar(self, icon, item):
+        self._sonar_on = not self._sonar_on
+        self._on_toggle_sonar(self._sonar_on)
         self._icon.menu = self._build_menu()
 
     def _quit(self, icon, item):
@@ -431,12 +479,14 @@ class Alerter:
 class TrafficLightApp:
     def __init__(self):
         self.alerter = Alerter()
+        self.sonar = SonarPlayer()
         self.tkinter_app = TkinterApp(on_drag_end=self._on_drag_end)
         self.tray_icon = TrayIcon(
             on_quit=self.quit,
             on_toggle_sound=self._toggle_sound,
             on_toggle_notification=self._toggle_notification,
             on_set_speed=self._set_blink_speed,
+            on_toggle_sonar=self._toggle_sonar,
         )
         self.watcher = StatusWatcher(STATUS_FILE, self._on_status_change)
 
@@ -450,6 +500,10 @@ class TrafficLightApp:
         self.tray_icon.update_state(state)
         elapsed_text = self._get_elapsed_text()
         self.alerter.alert(state, elapsed_text)
+        if state == "coding":
+            self.sonar.start()
+        else:
+            self.sonar.stop()
 
     def _on_drag_end(self, x, y):
         pass
@@ -459,6 +513,11 @@ class TrafficLightApp:
 
     def _toggle_notification(self, on):
         self.alerter.notification_on = on
+
+    def _toggle_sonar(self, on):
+        self.sonar.sonar_on = on
+        if on and self.tkinter_app._current_state == "coding":
+            self.sonar.start()
 
     def _get_elapsed_text(self):
         start = self.tkinter_app._session_start
@@ -492,6 +551,7 @@ class TrafficLightApp:
         self.tkinter_app.root.withdraw()
 
     def quit(self):
+        self.sonar.stop()
         self.watcher.stop()
         self.tkinter_app.quit()
 

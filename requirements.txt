@@ -2,3 +2,4 @@ pystray>=0.19.5
 Pillow>=10.0.0
 watchdog>=3.0.0
 win10toast>=0.9
+pygame>=2.5.0
