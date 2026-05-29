@@ -60,7 +60,7 @@ python traffic_light.py
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --noconsole --name "ClaudeTrafficLight" --add-data "submarine sonar_耳聆网.wav;." traffic_light.py
+pyinstaller --onefile --noconsole --name "ClaudeTrafficLight" --add-data "sonar.wav;." traffic_light.py
 ```
 
 生成的 exe 在 `dist/` 目录。
@@ -69,7 +69,7 @@ pyinstaller --onefile --noconsole --name "ClaudeTrafficLight" --add-data "submar
 
 ```
 ├── traffic_light.py              # 主程序（单文件，约 600 行）
-├── submarine sonar_耳聆网.wav     # 声纳音效
+├── sonar.wav     # 声纳音效
 ├── requirements.txt              # Python 依赖
 ├── .gitignore
 └── README.md
@@ -79,12 +79,8 @@ pyinstaller --onefile --noconsole --name "ClaudeTrafficLight" --add-data "submar
 
 - Python 3.8+
 - tkinter（Python 内置）
-- pystray — 系统托盘图标
-- Pillow — 生成托盘图标
-- watchdog — 文件变化监听
-- pygame — MP3/WAV 音效播放
-- win10toast — Windows 通知
-- winsound（Python 内置）— 系统提示音
+- winotify — Windows 通知（唯一外部依赖）
+- ctypes / winsound（Python 内置）— Win32 托盘图标 + WAV 音效
 
 ## 原理
 
@@ -93,13 +89,12 @@ Claude Code Hooks（写入状态文件）
         ↓
 ~/.claude-traffic-light-status.json
         ↓
-Python App（watchdog 监听文件变化）
+Python App（文件轮询监听）
         ↓
 ├── tkinter HUD 悬浮面板
-├── pystray 系统托盘
-├── pygame 声纳音效
-├── win10toast Windows 通知
-└── winsound 提示音
+├── Win32 API 系统托盘
+├── winsound 声纳音效 + 提示音
+└── winotify Windows 通知
 ```
 
 ## License

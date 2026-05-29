@@ -9,10 +9,7 @@ import tkinter as tk
 import winsound
 
 import pystray
-import pygame
 from PIL import Image, ImageDraw
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 from winotify import Notification
 
 STATUS_FILE = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), ".claude-traffic-light-status.json")
@@ -40,12 +37,36 @@ STATE_LABELS_ZH = {
     "done": "编码完成",
 }
 
+def _hook_entry(state):
+    cmd = (
+        "python -c \"import json,time,os;"
+        " open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w')"
+        f".write(json.dumps({{'state':'{state}','timestamp':int(time.time())}}))\""
+    )
+    return [{"matcher": "", "hooks": [{"type": "command", "command": cmd}]}]
+
+
 HOOKS_CONFIG = {
-    "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'thinking','timestamp':int(time.time())}))\""}]}],
-    "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'coding','timestamp':int(time.time())}))\""}]}],
-    "Notification": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'waiting','timestamp':int(time.time())}))\""}]}],
-    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "python -c \"import json,time,os; open(os.path.join(os.environ['USERPROFILE'],'.claude-traffic-light-status.json'),'w').write(json.dumps({'state':'done','timestamp':int(time.time())}))\""}]}],
+    "UserPromptSubmit": _hook_entry("thinking"),
+    "PostToolUse": _hook_entry("coding"),
+    "Notification": _hook_entry("waiting"),
+    "Stop": _hook_entry("done"),
 }
+
+
+def _dim_color(hex_color, factor):
+    r = int(int(hex_color[1:3], 16) * factor)
+    g = int(int(hex_color[3:5], 16) * factor)
+    b = int(int(hex_color[5:7], 16) * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _blend(hex_color, alpha, bg_rgb=(13, 13, 26)):
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    br, bg_, bb = bg_rgb
+    return f"#{int(br + (r - br) * alpha):02x}{int(bg_ + (g - bg_) * alpha):02x}{int(bb + (b - bb) * alpha):02x}"
 
 
 def read_status():
@@ -54,12 +75,6 @@ def read_status():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
-
-
-def write_status(state, message=""):
-    data = {"state": state, "timestamp": int(time.time()), "message": message}
-    with open(STATUS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f)
 
 
 def _resource_path(relative_path):
@@ -86,11 +101,15 @@ def check_hooks_installed():
         with open(CLAUDE_SETTINGS_FILE, "r", encoding="utf-8") as f:
             settings = json.load(f)
         hooks = settings.get("hooks", {})
-        for event in HOOKS_CONFIG:
+        for event, config in HOOKS_CONFIG.items():
             if event not in hooks:
                 return False
+            installed_cmd = hooks[event][0]["hooks"][0]["command"]
+            expected_cmd = config[0]["hooks"][0]["command"]
+            if installed_cmd != expected_cmd:
+                return False
         return True
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, IndexError):
         return False
 
 
@@ -108,9 +127,18 @@ def install_hooks():
         json.dump(settings, f, indent=2, ensure_ascii=False)
 
 
-SONAR_FILE = _resource_path("submarine sonar_耳聆网.wav")
+def _ensure_single_instance():
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "ClaudeTrafficLightSingleInstance")
+    return ctypes.windll.kernel32.GetLastError() != 183
 
-pygame.mixer.init()
+
+SONAR_FILE = _resource_path("sonar.wav")
+FONT_FILE = _resource_path("HarmonyOS_Sans_SC_Regular.ttf")
+
+# Load bundled HarmonyOS Sans SC font
+ctypes.windll.gdi32.AddFontResourceW(FONT_FILE)
+FONT = "HarmonyOS Sans SC"
+
 
 
 class SonarPlayer:
@@ -133,14 +161,13 @@ class SonarPlayer:
             return
         self._playing = True
         try:
-            pygame.mixer.music.load(SONAR_FILE)
-            pygame.mixer.music.play(loops=-1)
-        except pygame.error:
+            winsound.PlaySound(SONAR_FILE, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP)
+        except Exception:
             self._playing = False
 
     def stop(self):
         if self._playing:
-            pygame.mixer.music.stop()
+            winsound.PlaySound(None, 0)
         self._playing = False
 
 
@@ -148,16 +175,16 @@ class TkinterApp:
     BG = "#0d0d1a"
     BG_RGB = (13, 13, 26)
 
-    def __init__(self, on_drag_end=None):
+    def __init__(self):
         self.root = tk.Tk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=self.BG)
 
-        self._on_drag_end = on_drag_end
         self._drag_start_x = 0
         self._drag_start_y = 0
         self._click_through = False
+        self._context_menu_callback = None
 
         self._breath_phase = 0.0
         self._breath_job = None
@@ -168,6 +195,7 @@ class TkinterApp:
         self._session_start = None
         self._speed_multiplier = 1.0
         self._scan_y = 0
+        self._scan_color = "#00e676"
 
         self._create_widgets()
         self._position_window(default=False)
@@ -180,7 +208,7 @@ class TkinterApp:
         border_color = "#00e676"
         self.canvas = tk.Canvas(outer, width=220, height=52, bg=self.BG,
                                 highlightthickness=1,
-                                highlightbackground=self._dim_color(border_color, 0.3))
+                                highlightbackground=_dim_color(border_color, 0.3))
         self.canvas.pack()
 
         self._scan_line = self.canvas.create_line(10, 2, 210, 2, fill="", width=1)
@@ -193,13 +221,13 @@ class TkinterApp:
         )
         self._diamond_ring = self.canvas.create_polygon(
             cx, cy - s - 3, cx + s + 3, cy, cx, cy + s + 3, cx - s - 3, cy,
-            fill="", outline=self._dim_color("#00e676", 0.25), width=1
+            fill="", outline=_dim_color("#00e676", 0.25), width=1
         )
         self.canvas.create_line(cx, cy + s + 5, cx, cy + s + 10,
-                                fill=self._dim_color("#00e676", 0.3), width=1)
+                                fill=_dim_color("#00e676", 0.3), width=1)
         self._status_label = self.canvas.create_text(
             46, 18, text="STATUS", anchor="w",
-            font=("Consolas", 9), fill=self._dim_color("#00e676", 0.45)
+            font=("Consolas", 9), fill=_dim_color("#00e676", 0.45)
         )
         self._state_text = self.canvas.create_text(
             46, 34, text="INIT...", anchor="w",
@@ -207,29 +235,14 @@ class TkinterApp:
         )
         self._timer_text = self.canvas.create_text(
             172, 34, text="", anchor="w",
-            font=("Consolas", 10), fill=self._dim_color("#00e676", 0.5)
+            font=("Consolas", 10), fill=_dim_color("#00e676", 0.5)
         )
         self.canvas.create_text(
             212, 26, text="SYS", anchor="e",
-            font=("Consolas", 7), fill=self._dim_color("#00e676", 0.2)
+            font=("Consolas", 7), fill=_dim_color("#00e676", 0.2)
         )
         self.canvas.create_line(10, 50, 210, 50,
-                                fill=self._dim_color("#00e676", 0.15), width=1)
-
-    @staticmethod
-    def _dim_color(hex_color, factor):
-        r = int(int(hex_color[1:3], 16) * factor)
-        g = int(int(hex_color[3:5], 16) * factor)
-        b = int(int(hex_color[5:7], 16) * factor)
-        return f"#{r:02x}{g:02x}{b:02x}"
-
-    @staticmethod
-    def _blend(hex_color, alpha):
-        r = int(hex_color[1:3], 16)
-        g = int(hex_color[3:5], 16)
-        b = int(hex_color[5:7], 16)
-        br, bg_, bb = TkinterApp.BG_RGB
-        return f"#{int(br + (r - br) * alpha):02x}{int(bg_ + (g - bg_) * alpha):02x}{int(bb + (b - bb) * alpha):02x}"
+                                fill=_dim_color("#00e676", 0.15), width=1)
 
     def _position_window(self, default=False):
         pos = None
@@ -251,10 +264,14 @@ class TkinterApp:
         cfg["window_y"] = self.root.winfo_y()
         save_config(cfg)
 
+    def set_context_menu_callback(self, callback):
+        self._context_menu_callback = callback
+
     def _bind_drag_recursive(self, widget):
         widget.bind("<ButtonPress-1>", self._on_drag_start)
         widget.bind("<B1-Motion>", self._on_drag_motion)
         widget.bind("<ButtonRelease-1>", self._on_drag_release)
+        widget.bind("<ButtonPress-3>", self._on_right_click)
         for child in widget.winfo_children():
             self._bind_drag_recursive(child)
 
@@ -269,26 +286,34 @@ class TkinterApp:
 
     def _on_drag_release(self, event):
         self._save_position()
-        if self._on_drag_end:
-            self._on_drag_end(self.root.winfo_x(), self.root.winfo_y())
+
+    def _on_right_click(self, event):
+        if self._context_menu_callback:
+            self._context_menu_callback(event)
+
+    @property
+    def session_start(self):
+        return self._session_start
+
+    @property
+    def click_through(self):
+        return self._click_through
 
     def update_state(self, state):
         old_state = self._current_state
-        # Only reset timer when state actually changes
-        if state != old_state:
-            self._current_state = state
-            self._state_start = time.time()
-            if state == "coding" and (old_state is None or old_state == "done"):
-                self._session_start = time.time()
-            color = STATE_COLORS.get(state, "#00e676")
-            label = STATE_LABELS.get(state, "UNKNOWN")
-            self.canvas.itemconfig(self._diamond, fill=color)
-            self.canvas.itemconfig(self._diamond_ring, outline=self._dim_color(color, 0.25))
-            self.canvas.itemconfig(self._state_text, text=label, fill=color)
-            self.canvas.itemconfig(self._status_label, fill=self._dim_color(color, 0.45))
-            self._start_animation(state)
-            self._start_timer(state)
-            self._start_scan_line(color)
+        if state == old_state:
+            return
+        self._current_state = state
+        self._state_start = time.time()
+        if state == "coding" and (old_state is None or old_state == "done"):
+            self._session_start = time.time()
+        color = STATE_COLORS.get(state, "#00e676")
+        label = STATE_LABELS.get(state, "UNKNOWN")
+        self.canvas.itemconfig(self._diamond, fill=color)
+        self.canvas.itemconfig(self._diamond_ring, outline=_dim_color(color, 0.25))
+        self.canvas.itemconfig(self._state_text, text=label, fill=color)
+        self.canvas.itemconfig(self._status_label, fill=_dim_color(color, 0.45))
+        self._start_animation(state)
         self._start_timer(state)
         self._start_scan_line(color)
 
@@ -314,7 +339,7 @@ class TkinterApp:
         self._breath_phase = (self._breath_phase + 1) % steps
         alpha = 0.25 + 0.75 * (0.5 + 0.5 * math.sin(2 * math.pi * self._breath_phase / steps))
         color = STATE_COLORS.get(state, "#00e676")
-        self.canvas.itemconfig(self._diamond, fill=self._blend(color, alpha))
+        self.canvas.itemconfig(self._diamond, fill=_blend(color, alpha))
         self._breath_job = self.root.after(interval, lambda: self._breathe(state))
 
     def _start_scan_line(self, color):
@@ -327,7 +352,7 @@ class TkinterApp:
     def _animate_scan(self):
         self._scan_y = (self._scan_y + 1) if self._scan_y < 48 else 4
         alpha = 0.15 if self._current_state != "done" else 0.08
-        self.canvas.itemconfig(self._scan_line, fill=self._dim_color(self._scan_color, alpha))
+        self.canvas.itemconfig(self._scan_line, fill=_dim_color(self._scan_color, alpha))
         self.canvas.coords(self._scan_line, 10, self._scan_y, 210, self._scan_y)
         self._scan_job = self.root.after(80, self._animate_scan)
 
@@ -371,25 +396,36 @@ class TkinterApp:
         self.root.destroy()
 
 
-class StatusWatcher(FileSystemEventHandler):
+class StatusWatcher:
     def __init__(self, file_path, callback):
         self._file_path = os.path.abspath(file_path)
         self._callback = callback
-        self._observer = Observer()
-        self._observer.schedule(self, os.path.dirname(self._file_path), recursive=False)
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._last_mtime = 0
 
-    def on_modified(self, event):
-        if os.path.abspath(event.src_path) == self._file_path:
-            status = read_status()
-            if status:
-                self._callback(status)
+    def _poll(self):
+        while not self._stop_event.is_set():
+            try:
+                mtime = os.path.getmtime(self._file_path)
+                if mtime != self._last_mtime:
+                    self._last_mtime = mtime
+                    status = read_status()
+                    if status:
+                        self._callback(status)
+            except OSError:
+                pass
+            self._stop_event.wait(0.5)
 
     def start(self):
-        self._observer.start()
+        self._last_mtime = 0
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
 
     def stop(self):
-        self._observer.stop()
-        self._observer.join()
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2)
 
 
 class SettingsWindow:
@@ -417,7 +453,7 @@ class SettingsWindow:
         label = tk.Label(frame, text=f"▸ {title}", bg=self.BG, fg=self.ACCENT,
                          font=("Consolas", 11, "bold"), anchor="w")
         label.pack(fill="x")
-        sep = tk.Frame(frame, bg=self._dim_color(self.ACCENT, 0.25), height=1)
+        sep = tk.Frame(frame, bg=_dim_color(self.ACCENT, 0.25), height=1)
         sep.pack(fill="x", pady=(2, 6))
         content = tk.Frame(frame, bg=self.BG)
         content.pack(fill="x")
@@ -427,7 +463,7 @@ class SettingsWindow:
         row = tk.Frame(parent, bg=self.BG)
         row.pack(fill="x", pady=2)
         tk.Label(row, text=label_text, bg=self.BG, fg=self.FG,
-                 font=("Microsoft YaHei UI", 10), anchor="w").pack(side="left")
+                 font=(FONT, 10), anchor="w").pack(side="left")
         var = tk.BooleanVar(value=initial)
         cb = tk.Checkbutton(row, variable=var, command=lambda: command(var.get()),
                             bg=self.BG, fg=self.ACCENT, selectcolor=self.DIM,
@@ -440,7 +476,7 @@ class SettingsWindow:
         row = tk.Frame(parent, bg=self.BG)
         row.pack(fill="x", pady=2)
         tk.Label(row, text=label_text, bg=self.BG, fg=self.FG,
-                 font=("Microsoft YaHei UI", 10), anchor="w").pack(side="left")
+                 font=(FONT, 10), anchor="w").pack(side="left")
         slider = tk.Scale(row, from_=from_, to=to_, resolution=resolution,
                           orient="horizontal", length=180, command=command,
                           bg=self.BG, fg=self.ACCENT, troughcolor=self.DIM,
@@ -450,20 +486,17 @@ class SettingsWindow:
         return slider
 
     def _build_ui(self):
-        # Header
         header = tk.Frame(self._window, bg=self.BG)
         header.pack(fill="x", padx=16, pady=(16, 0))
         tk.Label(header, text="⚙  SETTINGS", bg=self.BG, fg=self.ACCENT,
                  font=("Consolas", 16, "bold")).pack(side="left")
 
-        # --- Notifications ---
         sec = self._section(self._window, "通知与声音")
         cfg = load_config()
         self._var_sound = self._toggle_row(sec, "状态提示音", cfg.get("sound_on", True), self._on_sound)
         self._var_notif = self._toggle_row(sec, "Windows 通知", cfg.get("notification_on", True), self._on_notif)
         self._var_sonar = self._toggle_row(sec, "编码声纳声", cfg.get("sonar_on", True), self._on_sonar)
 
-        # --- Display ---
         sec = self._section(self._window, "显示")
         self._slider_row(sec, "透明度", cfg.get("opacity", 1.0), 0.2, 1.0, 0.1, self._on_opacity)
         speed_map = {"fast": 0, "medium": 1, "slow": 2}
@@ -471,25 +504,27 @@ class SettingsWindow:
         self._slider_row(sec, "闪烁速度", speed_map.get(current_speed, 1), 0, 2, 1, self._on_speed)
         self._var_clickthrough = self._toggle_row(sec, "点击穿透", cfg.get("click_through", False), self._on_clickthrough)
 
-        # --- Hooks ---
         sec = self._section(self._window, "Claude Code Hooks")
         self._hook_status_label = tk.Label(sec, text="", bg=self.BG, fg=self.FG,
-                                           font=("Microsoft YaHei UI", 10), anchor="w")
+                                           font=(FONT, 10), anchor="w")
         self._hook_status_label.pack(fill="x", pady=2)
 
         self._hook_btn = tk.Button(sec, text="", command=self._on_install_hooks,
                                    bg=self.DIM, fg=self.ACCENT,
                                    font=("Consolas", 10, "bold"),
-                                   activebackground=self._dim_color(self.ACCENT, 0.3),
+                                   activebackground=_dim_color(self.ACCENT, 0.3),
                                    activeforeground=self.ACCENT,
                                    relief="flat", padx=16, pady=4, cursor="hand2")
         self._hook_btn.pack(pady=(4, 0))
 
-        # --- Footer ---
         footer = tk.Frame(self._window, bg=self.BG)
         footer.pack(side="bottom", fill="x", padx=16, pady=12)
         tk.Label(footer, text="Claude Code Traffic Light v1.0", bg=self.BG,
-                 fg=self._dim_color(self.ACCENT, 0.3), font=("Consolas", 8)).pack()
+                 fg=_dim_color(self.ACCENT, 0.3), font=("Consolas", 8)).pack()
+        link = tk.Label(footer, text="⭐  GitHub", bg=self.BG,
+                        fg=_dim_color(self.ACCENT, 0.5), font=(FONT, 9), cursor="hand2")
+        link.pack()
+        link.bind("<ButtonPress-1>", lambda e: os.startfile("https://github.com/Etshanyu/claude_code-_traffic-_light"))
 
     def _refresh_hook_status(self):
         installed = check_hooks_installed()
@@ -544,19 +579,14 @@ class SettingsWindow:
         install_hooks()
         self._refresh_hook_status()
 
-    @staticmethod
-    def _dim_color(hex_color, factor):
-        r = int(int(hex_color[1:3], 16) * factor)
-        g = int(int(hex_color[3:5], 16) * factor)
-        b = int(int(hex_color[5:7], 16) * factor)
-        return f"#{r:02x}{g:02x}{b:02x}"
-
 
 class TrayIcon:
-    def __init__(self, on_quit, on_show_window, on_show_settings):
+    def __init__(self, on_quit, on_show_window, on_show_settings, on_toggle_clickthrough, is_clickthrough):
         self._on_quit = on_quit
         self._on_show_window = on_show_window
         self._on_show_settings = on_show_settings
+        self._on_toggle_clickthrough = on_toggle_clickthrough
+        self._is_clickthrough = is_clickthrough
         self._current_state = "coding"
         self._icon = pystray.Icon(
             "traffic_light",
@@ -565,7 +595,8 @@ class TrayIcon:
             menu=self._build_menu()
         )
 
-    def _create_icon_image(self, color):
+    @staticmethod
+    def _create_icon_image(color):
         size = 64
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
@@ -581,6 +612,10 @@ class TrayIcon:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("设置", lambda _: self._on_show_settings()),
             pystray.MenuItem("显示窗口", lambda _: self._on_show_window()),
+            pystray.MenuItem(
+                lambda text: f"鼠标穿透: {'✓' if self._is_clickthrough() else '✗'}",
+                lambda _: self._on_toggle_clickthrough()
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出", self._quit),
         )
@@ -630,6 +665,72 @@ class Alerter:
                 self._notify("Claude Code", f"编码完成，耗时 {elapsed_text or '已结束'}")
 
 
+class _PopupMenu:
+    """HUD-styled popup menu backed by a Toplevel — no tkinter Menu grab issues."""
+    BG = "#0d0d1a"
+    FG = "#e0e0e0"
+    HOVER = "#1a1a3e"
+
+    def __init__(self, parent_root):
+        self._parent = parent_root
+        self._win = None
+
+    def show(self, x, y, items):
+        self.close()
+        self._win = tk.Toplevel(self._parent)
+        self._win.overrideredirect(True)
+        self._win.attributes("-topmost", True)
+        self._win.configure(bg=self.BG)
+        self._win.bind("<FocusOut>", self._on_focus_out)
+        self._win.bind("<Escape>", lambda e: self.close())
+
+        for item in items:
+            if item is None:
+                tk.Frame(self._win, bg="#333333", height=1).pack(fill="x", padx=8, pady=3)
+            else:
+                label, cmd = item
+                if cmd is None:
+                    tk.Label(self._win, text=label, bg=self.BG, fg="#888888",
+                             font=(FONT, 10), anchor="w",
+                             padx=16, pady=4).pack(fill="x")
+                else:
+                    lbl = tk.Label(self._win, text=label, bg=self.BG, fg=self.FG,
+                                   font=(FONT, 10), anchor="w",
+                                   cursor="hand2", padx=16, pady=4)
+                    lbl.pack(fill="x")
+                    lbl.bind("<Enter>", lambda e, w=lbl: w.configure(bg=self.HOVER))
+                    lbl.bind("<Leave>", lambda e, w=lbl: w.configure(bg=self.BG))
+                    lbl.bind("<ButtonPress-1>", lambda e, c=cmd: self._activate(c))
+
+        self._win.update_idletasks()
+        w = self._win.winfo_width()
+        h = self._win.winfo_height()
+        sw = self._win.winfo_screenwidth()
+        sh = self._win.winfo_screenheight()
+        if x + w > sw:
+            x = sw - w
+        if y + h > sh:
+            y = sh - h
+        self._win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self._win.focus_force()
+
+    def _activate(self, command):
+        self._win.unbind("<FocusOut>")
+        self.close()
+        command()
+
+    def _on_focus_out(self, event):
+        self.close()
+
+    def close(self):
+        if self._win:
+            try:
+                self._win.destroy()
+            except tk.TclError:
+                pass
+            self._win = None
+
+
 class TrafficLightApp:
     def __init__(self):
         cfg = load_config()
@@ -639,9 +740,10 @@ class TrafficLightApp:
         self.alerter.notification_on = cfg.get("notification_on", True)
 
         self.sonar = SonarPlayer()
-        self.sonar._sonar_on = cfg.get("sonar_on", True)
+        self.sonar.sonar_on = cfg.get("sonar_on", True)
 
-        self.tkinter_app = TkinterApp(on_drag_end=self._on_drag_end)
+        self.tkinter_app = TkinterApp()
+        self.tkinter_app.set_context_menu_callback(self._show_context_menu)
         self.tkinter_app.set_opacity(cfg.get("opacity", 1.0))
         if cfg.get("click_through", False):
             self.tkinter_app.set_click_through(True)
@@ -650,11 +752,14 @@ class TrafficLightApp:
 
         self.tray_icon = TrayIcon(
             on_quit=self.quit,
-            on_show_window=self._show_window,
-            on_show_settings=self._show_settings,
+            on_show_window=lambda: self.tkinter_app.root.after(0, self._show_window),
+            on_show_settings=lambda: self.tkinter_app.root.after(0, self._show_settings),
+            on_toggle_clickthrough=lambda: self.tkinter_app.root.after(0, self._toggle_clickthrough),
+            is_clickthrough=lambda: self.tkinter_app.click_through,
         )
         self.watcher = StatusWatcher(STATUS_FILE, self._on_status_change)
         self._settings_window = None
+        self._popup = _PopupMenu(self.tkinter_app.root)
 
     def _on_status_change(self, status):
         state = status.get("state", "done")
@@ -670,11 +775,8 @@ class TrafficLightApp:
         else:
             self.sonar.stop()
 
-    def _on_drag_end(self, x, y):
-        pass
-
     def _get_elapsed_text(self):
-        start = self.tkinter_app._session_start
+        start = self.tkinter_app.session_start
         if start is None:
             return ""
         elapsed = int(time.time() - start)
@@ -691,6 +793,24 @@ class TrafficLightApp:
             except tk.TclError:
                 pass
         self._settings_window = SettingsWindow(self.tkinter_app.root, self)
+
+    def _show_context_menu(self, event):
+        state = STATE_LABELS_ZH.get(self.tkinter_app._current_state, "未知")
+        self._popup.show(event.x_root, event.y_root, [
+            (f"状态: {state}", None),
+            None,
+            ("设置", self._show_settings),
+            ("显示窗口", self._show_window),
+            None,
+            ("退出", self.quit),
+        ])
+
+    def _toggle_clickthrough(self):
+        new_val = not self.tkinter_app.click_through
+        self.tkinter_app.set_click_through(new_val)
+        cfg = load_config()
+        cfg["click_through"] = new_val
+        save_config(cfg)
 
     def run(self):
         status = read_status()
@@ -715,6 +835,10 @@ class TrafficLightApp:
 
 
 if __name__ == "__main__":
+    if not _ensure_single_instance():
+        print("Already running.")
+        sys.exit(0)
+
     if len(sys.argv) > 1 and sys.argv[1] == "--test-ui":
         app = TkinterApp()
         watcher = StatusWatcher(STATUS_FILE, lambda s: app.update_state(s["state"]))
