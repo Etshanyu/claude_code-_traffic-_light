@@ -351,6 +351,66 @@ class Alerter:
                 )
 
 
+class TrafficLightApp:
+    def __init__(self):
+        self.alerter = Alerter()
+        self.tkinter_app = TkinterApp(on_drag_end=self._on_drag_end)
+        self.tray_icon = TrayIcon(
+            on_quit=self.quit,
+            on_toggle_sound=self._toggle_sound,
+            on_toggle_notification=self._toggle_notification,
+            on_set_speed=self._set_blink_speed,
+        )
+        self.watcher = StatusWatcher(STATUS_FILE, self._on_status_change)
+
+    def _on_status_change(self, status):
+        state = status.get("state", "done")
+        self.tkinter_app.update_state(state)
+        self.tray_icon.update_state(state)
+        elapsed_text = self._get_elapsed_text()
+        self.alerter.alert(state, elapsed_text)
+
+    def _on_drag_end(self, x, y):
+        pass
+
+    def _toggle_sound(self, on):
+        self.alerter.sound_on = on
+
+    def _toggle_notification(self, on):
+        self.alerter.notification_on = on
+
+    def _get_elapsed_text(self):
+        start = self.tkinter_app._session_start
+        if start is None:
+            return ""
+        elapsed = int(time.time() - start)
+        return f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+
+    def _set_blink_speed(self, speed):
+        multiplier = {"fast": 0.5, "medium": 1.0, "slow": 2.0}.get(speed, 1.0)
+        self.tkinter_app.set_speed_multiplier(multiplier)
+
+    def run(self):
+        status = read_status()
+        if status:
+            self._on_status_change(status)
+
+        self.watcher.start()
+
+        tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
+        tray_thread.start()
+
+        self.tkinter_app.root.protocol("WM_DELETE_WINDOW", self._minimize_to_tray)
+        self.tkinter_app.run()
+
+    def _minimize_to_tray(self):
+        self.tkinter_app.root.withdraw()
+
+    def quit(self):
+        self.watcher.stop()
+        self.tkinter_app.quit()
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "--test-ui":
@@ -364,6 +424,5 @@ if __name__ == "__main__":
         app.root.protocol("WM_DELETE_WINDOW", lambda: (watcher.stop(), app.quit()))
         app.run()
     else:
-        result = read_status()
-        print(f"Status file: {STATUS_FILE}")
-        print(f"Current status: {result}")
+        app = TrafficLightApp()
+        app.run()
