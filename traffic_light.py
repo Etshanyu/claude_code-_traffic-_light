@@ -16,12 +16,18 @@ STATUS_FILE = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".claude-traffic-light-config.json")
 
 STATE_COLORS = {
-    "coding": "#27ae60",
-    "waiting": "#f39c12",
-    "done": "#e74c3c",
+    "coding": "#00e676",
+    "waiting": "#ffd740",
+    "done": "#ff5252",
 }
 
 STATE_LABELS = {
+    "coding": "CODING",
+    "waiting": "WAITING",
+    "done": "COMPLETE",
+}
+
+STATE_LABELS_ZH = {
     "coding": "编码中",
     "waiting": "等待操作",
     "done": "编码完成",
@@ -41,56 +47,109 @@ def write_status(state, message=""):
 
 
 class TkinterApp:
+    BG = "#0d0d1a"
+    BG_RGB = (13, 13, 26)
+
     def __init__(self, on_drag_end=None):
         self.root = tk.Tk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.configure(bg="white")
+        self.root.configure(bg=self.BG)
 
-        self._setup_styles()
-        self._create_widgets()
-
+        self._on_drag_end = on_drag_end
         self._drag_start_x = 0
         self._drag_start_y = 0
-        self._on_drag_end = on_drag_end
-
-        self._position_window(default=True)
-
-        self.frame.bind("<ButtonPress-1>", self._on_drag_start)
-        self.frame.bind("<B1-Motion>", self._on_drag_motion)
-        self.frame.bind("<ButtonRelease-1>", self._on_drag_release)
 
         self._breath_phase = 0.0
         self._breath_job = None
         self._timer_job = None
+        self._scan_job = None
         self._current_state = None
         self._state_start = None
         self._session_start = None
         self._speed_multiplier = 1.0
+        self._scan_y = 0
 
-    def _setup_styles(self):
-        self.frame_bg = "#ffffff"
-        self.font_label = ("Microsoft YaHei UI", 10, "bold")
-        self.font_time = ("Consolas", 9)
-        self.colors = STATE_COLORS
+        self._create_widgets()
+        self._position_window(default=True)
+
+        self._bind_drag_recursive(self.root)
 
     def _create_widgets(self):
-        self.frame = tk.Frame(self.root, bg=self.frame_bg, padx=10, pady=6,
-                              highlightbackground="#e0e0e0", highlightthickness=1)
-        self.frame.pack()
+        outer = tk.Frame(self.root, bg=self.BG, padx=2, pady=2)
+        outer.pack()
 
-        self.dot_canvas = tk.Canvas(self.frame, width=14, height=14,
-                                    bg=self.frame_bg, highlightthickness=0)
-        self.dot_canvas.pack(side=tk.LEFT, padx=(0, 8))
-        self.dot = self.dot_canvas.create_oval(1, 1, 13, 13, fill="#999999", outline="")
+        border_color = "#00e676"
+        self.canvas = tk.Canvas(outer, width=220, height=52, bg=self.BG,
+                                highlightthickness=1,
+                                highlightbackground=self._dim_color(border_color, 0.3))
+        self.canvas.pack()
 
-        self.label = tk.Label(self.frame, text="等待中...", bg=self.frame_bg,
-                              font=self.font_label, fg="#333333")
-        self.label.pack(side=tk.LEFT, padx=(0, 8))
+        # Top scan line
+        self._scan_line = self.canvas.create_line(10, 2, 210, 2, fill="", width=1)
 
-        self.time_label = tk.Label(self.frame, text="", bg=self.frame_bg,
-                                   font=self.font_time, fg="#999999")
-        self.time_label.pack(side=tk.LEFT)
+        # Diamond indicator
+        cx, cy = 24, 26
+        s = 7
+        self._diamond = self.canvas.create_polygon(
+            cx, cy - s, cx + s, cy, cx, cy + s, cx - s, cy,
+            fill="#00e676", outline=""
+        )
+        # Diamond glow ring
+        self._diamond_ring = self.canvas.create_polygon(
+            cx, cy - s - 3, cx + s + 3, cy, cx, cy + s + 3, cx - s - 3, cy,
+            fill="", outline=self._dim_color("#00e676", 0.25), width=1
+        )
+
+        # Vertical separator line below diamond
+        self.canvas.create_line(cx, cy + s + 5, cx, cy + s + 10,
+                                fill=self._dim_color("#00e676", 0.3), width=1)
+
+        # STATUS label
+        self._status_label = self.canvas.create_text(
+            46, 18, text="STATUS", anchor="w",
+            font=("Consolas", 9), fill=self._dim_color("#00e676", 0.45)
+        )
+
+        # Main state text
+        self._state_text = self.canvas.create_text(
+            46, 34, text="INIT...", anchor="w",
+            font=("Consolas", 13, "bold"), fill="#00e676"
+        )
+
+        # Timer text
+        self._timer_text = self.canvas.create_text(
+            172, 34, text="", anchor="w",
+            font=("Consolas", 10), fill=self._dim_color("#00e676", 0.5)
+        )
+
+        # Right side vertical label
+        self.canvas.create_text(
+            212, 26, text="SYS", anchor="e",
+            font=("Consolas", 7), fill=self._dim_color("#00e676", 0.2)
+        )
+
+        # Bottom edge glow line
+        self.canvas.create_line(10, 50, 210, 50,
+                                fill=self._dim_color("#00e676", 0.15), width=1)
+
+    @staticmethod
+    def _dim_color(hex_color, factor):
+        r = int(int(hex_color[1:3], 16) * factor)
+        g = int(int(hex_color[3:5], 16) * factor)
+        b = int(int(hex_color[5:7], 16) * factor)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    @staticmethod
+    def _blend(hex_color, alpha):
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+        br, bg_, bb = TkinterApp.BG_RGB
+        r2 = int(br + (r - br) * alpha)
+        g2 = int(bg_ + (g - bg_) * alpha)
+        b2 = int(bb + (b - bb) * alpha)
+        return f"#{r2:02x}{g2:02x}{b2:02x}"
 
     def _position_window(self, default=False):
         pos = None
@@ -100,7 +159,7 @@ class TkinterApp:
             x, y = pos
         else:
             screen_w = self.root.winfo_screenwidth()
-            x = screen_w - 200
+            x = screen_w - 240
             y = 20
         self.root.geometry(f"+{x}+{y}")
 
@@ -125,6 +184,13 @@ class TkinterApp:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f)
 
+    def _bind_drag_recursive(self, widget):
+        widget.bind("<ButtonPress-1>", self._on_drag_start)
+        widget.bind("<B1-Motion>", self._on_drag_motion)
+        widget.bind("<ButtonRelease-1>", self._on_drag_release)
+        for child in widget.winfo_children():
+            self._bind_drag_recursive(child)
+
     def _on_drag_start(self, event):
         self._drag_start_x = event.x
         self._drag_start_y = event.y
@@ -147,14 +213,17 @@ class TkinterApp:
         if state == "coding" and (old_state is None or old_state == "done"):
             self._session_start = time.time()
 
-        color = self.colors.get(state, "#999999")
-        label = STATE_LABELS.get(state, "未知")
+        color = STATE_COLORS.get(state, "#00e676")
+        label = STATE_LABELS.get(state, "UNKNOWN")
 
-        self.dot_canvas.itemconfig(self.dot, fill=color)
-        self.label.config(text=label)
+        self.canvas.itemconfig(self._diamond, fill=color)
+        self.canvas.itemconfig(self._diamond_ring, outline=self._dim_color(color, 0.25))
+        self.canvas.itemconfig(self._state_text, text=f"{label}", fill=color)
+        self.canvas.itemconfig(self._status_label, fill=self._dim_color(color, 0.45))
 
         self._start_animation(state)
         self._start_timer(state)
+        self._start_scan_line(color)
 
     def set_speed_multiplier(self, multiplier):
         self._speed_multiplier = multiplier
@@ -176,21 +245,28 @@ class TkinterApp:
         steps = 20
         interval = period // steps
         self._breath_phase = (self._breath_phase + 1) % steps
-        alpha = 0.3 + 0.7 * (0.5 + 0.5 * math.sin(2 * math.pi * self._breath_phase / steps))
+        alpha = 0.25 + 0.75 * (0.5 + 0.5 * math.sin(2 * math.pi * self._breath_phase / steps))
 
-        color = self.colors.get(state, "#999999")
-        r = int(color[1:3], 16)
-        g = int(color[3:5], 16)
-        b = int(color[5:7], 16)
+        color = STATE_COLORS.get(state, "#00e676")
+        blended = self._blend(color, alpha)
 
-        bg_r, bg_g, bg_b = 255, 255, 255
-        blend_r = int(bg_r + (r - bg_r) * alpha)
-        blend_g = int(bg_g + (g - bg_g) * alpha)
-        blend_b = int(bg_b + (b - bg_b) * alpha)
-        blended = f"#{blend_r:02x}{blend_g:02x}{blend_b:02x}"
-
-        self.dot_canvas.itemconfig(self.dot, fill=blended)
+        self.canvas.itemconfig(self._diamond, fill=blended)
         self._breath_job = self.root.after(interval, lambda: self._breathe(state))
+
+    def _start_scan_line(self, color):
+        if self._scan_job:
+            self.root.after_cancel(self._scan_job)
+            self._scan_job = None
+        self._scan_y = 4
+        self._scan_color = color
+        self._animate_scan()
+
+    def _animate_scan(self):
+        self._scan_y = (self._scan_y + 1) if self._scan_y < 48 else 4
+        alpha = 0.15 if self._current_state != "done" else 0.08
+        self.canvas.itemconfig(self._scan_line, fill=self._dim_color(self._scan_color, alpha))
+        self.canvas.coords(self._scan_line, 10, self._scan_y, 210, self._scan_y)
+        self._scan_job = self.root.after(80, self._animate_scan)
 
     def _start_timer(self, state):
         if self._timer_job:
@@ -202,9 +278,8 @@ class TkinterApp:
         if self._state_start is None:
             return
         elapsed = int(time.time() - self._state_start)
-        prefix = "总 " if state == "done" else ""
-        text = f"{prefix}{elapsed // 60:02d}:{elapsed % 60:02d}"
-        self.time_label.config(text=text)
+        text = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+        self.canvas.itemconfig(self._timer_text, text=text)
 
         if state != "done":
             self._timer_job = self.root.after(1000, lambda: self._tick_timer(state))
@@ -217,6 +292,8 @@ class TkinterApp:
             self.root.after_cancel(self._breath_job)
         if self._timer_job:
             self.root.after_cancel(self._timer_job)
+        if self._scan_job:
+            self.root.after_cancel(self._scan_job)
         self.root.quit()
         self.root.destroy()
 
@@ -255,7 +332,7 @@ class TrayIcon:
         self._notification_on = True
         self._icon = pystray.Icon(
             "traffic_light",
-            self._create_icon_image("#27ae60"),
+            self._create_icon_image(STATE_COLORS["coding"]),
             "Claude Code: 编码中",
             menu=self._build_menu()
         )
@@ -270,7 +347,7 @@ class TrayIcon:
     def _build_menu(self):
         return pystray.Menu(
             pystray.MenuItem(
-                lambda text: f"状态: {STATE_LABELS.get(self._current_state, '未知')}",
+                lambda text: f"状态: {STATE_LABELS_ZH.get(self._current_state, '未知')}",
                 None, enabled=False
             ),
             pystray.Menu.SEPARATOR,
@@ -294,7 +371,7 @@ class TrayIcon:
         self._current_state = state
         color = STATE_COLORS.get(state, "#999999")
         self._icon.icon = self._create_icon_image(color)
-        self._icon.title = f"Claude Code: {STATE_LABELS.get(state, '未知')}"
+        self._icon.title = f"Claude Code: {STATE_LABELS_ZH.get(state, '未知')}"
         self._icon.menu = self._build_menu()
 
     def _toggle_sound(self, icon, item):
@@ -365,6 +442,10 @@ class TrafficLightApp:
 
     def _on_status_change(self, status):
         state = status.get("state", "done")
+        # Schedule UI update on the main thread via tkinter's after()
+        self.tkinter_app.root.after(0, self._apply_state_change, state)
+
+    def _apply_state_change(self, state):
         self.tkinter_app.update_state(state)
         self.tray_icon.update_state(state)
         elapsed_text = self._get_elapsed_text()
@@ -391,9 +472,13 @@ class TrafficLightApp:
         self.tkinter_app.set_speed_multiplier(multiplier)
 
     def run(self):
+        # Load initial status silently (no alert for stale state)
         status = read_status()
         if status:
-            self._on_status_change(status)
+            state = status.get("state", "done")
+            self.tkinter_app.update_state(state)
+            self.tray_icon.update_state(state)
+            self.alerter._last_state = state  # suppress stale alert
 
         self.watcher.start()
 
