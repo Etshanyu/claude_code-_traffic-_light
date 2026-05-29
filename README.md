@@ -31,7 +31,7 @@ Windows 桌面上的 Claude Code 状态指示器，HUD 科幻面板风格。
 ### 从源码运行
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/claude-code-traffic-light.git
+git clone https://github.com/Etshanyu/claude_code-_traffic-_light.git
 cd claude-code-traffic-light
 pip install -r requirements.txt
 python traffic_light.py
