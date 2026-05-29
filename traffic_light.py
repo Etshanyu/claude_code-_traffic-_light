@@ -13,7 +13,7 @@ import pygame
 from PIL import Image, ImageDraw
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from win10toast import ToastNotifier
+from winotify import Notification
 
 STATUS_FILE = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), ".claude-traffic-light-status.json")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".claude-traffic-light-config.json")
@@ -602,8 +602,13 @@ class Alerter:
     def __init__(self):
         self.sound_on = True
         self.notification_on = True
-        self._toaster = ToastNotifier()
         self._last_state = None
+
+    def _notify(self, title, msg):
+        try:
+            Notification(app_id="Claude Code Traffic Light", title=title, msg=msg).show()
+        except Exception:
+            pass
 
     def alert(self, state, elapsed_text=""):
         if state == self._last_state:
@@ -613,15 +618,12 @@ class Alerter:
             if self.sound_on:
                 winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
             if self.notification_on:
-                self._toaster.show_toast("Claude Code Traffic Light", "Claude Code 需要你的操作",
-                                         duration=3, threaded=True)
+                self._notify("Claude Code", "需要你的操作")
         elif state == "done":
             if self.sound_on:
                 winsound.MessageBeep(winsound.MB_ICONHAND)
             if self.notification_on:
-                self._toaster.show_toast("Claude Code Traffic Light",
-                                         f"Claude Code 编码完成，耗时 {elapsed_text or '已结束'}",
-                                         duration=3, threaded=True)
+                self._notify("Claude Code", f"编码完成，耗时 {elapsed_text or '已结束'}")
 
 
 class TrafficLightApp:

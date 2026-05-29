@@ -1,5 +1,5 @@
 pystray>=0.19.5
 Pillow>=10.0.0
 watchdog>=3.0.0
-win10toast>=0.9
+winotify>=1.1.0
 pygame>=2.5.0
