@@ -99,8 +99,7 @@ def install_hooks():
     if "hooks" not in settings:
         settings["hooks"] = {}
     for event, config in HOOKS_CONFIG.items():
-        if event not in settings["hooks"]:
-            settings["hooks"][event] = config
+        settings["hooks"][event] = config
     with open(CLAUDE_SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2, ensure_ascii=False)
 
