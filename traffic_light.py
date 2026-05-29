@@ -103,6 +103,7 @@ class TkinterApp:
         self._on_drag_end = on_drag_end
         self._drag_start_x = 0
         self._drag_start_y = 0
+        self._click_through = False
 
         self._breath_phase = 0.0
         self._breath_job = None
@@ -331,6 +332,23 @@ class TkinterApp:
     def run(self):
         self.root.mainloop()
 
+    def set_opacity(self, opacity):
+        self.root.attributes("-alpha", max(0.2, min(1.0, opacity)))
+
+    def set_click_through(self, enabled):
+        self._click_through = enabled
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+            if enabled:
+                style |= 0x00080020  # WS_EX_TRANSPARENT | WS_EX_LAYERED
+            else:
+                style &= ~0x00080020
+            ctypes.windll.user32.SetWindowLongW(hwnd, -20, style)
+        except Exception:
+            pass
+
     def quit(self):
         if self._breath_job:
             self.root.after_cancel(self._breath_job)
@@ -366,17 +384,21 @@ class StatusWatcher(FileSystemEventHandler):
 
 class TrayIcon:
     def __init__(self, on_quit, on_toggle_sound, on_toggle_notification,
-                 on_set_speed, on_toggle_sonar, on_show_window):
+                 on_set_speed, on_toggle_sonar, on_show_window,
+                 on_set_opacity, on_toggle_click_through):
         self._on_quit = on_quit
         self._on_toggle_sound = on_toggle_sound
         self._on_toggle_notification = on_toggle_notification
         self._on_set_speed = on_set_speed
         self._on_toggle_sonar = on_toggle_sonar
         self._on_show_window = on_show_window
+        self._on_set_opacity = on_set_opacity
+        self._on_toggle_click_through = on_toggle_click_through
         self._current_state = "coding"
         self._sound_on = True
         self._notification_on = True
         self._sonar_on = True
+        self._click_through = False
         self._icon = pystray.Icon(
             "traffic_light",
             self._create_icon_image(STATE_COLORS["coding"]),
@@ -415,6 +437,15 @@ class TrayIcon:
             pystray.MenuItem("闪烁速度: 中", lambda _: self._on_set_speed("medium")),
             pystray.MenuItem("闪烁速度: 慢", lambda _: self._on_set_speed("slow")),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("透明度: 100%", lambda _: self._on_set_opacity(1.0)),
+            pystray.MenuItem("透明度: 80%", lambda _: self._on_set_opacity(0.8)),
+            pystray.MenuItem("透明度: 60%", lambda _: self._on_set_opacity(0.6)),
+            pystray.MenuItem("透明度: 40%", lambda _: self._on_set_opacity(0.4)),
+            pystray.MenuItem(
+                lambda text: f"点击穿透: {'开启' if self._click_through else '关闭'}",
+                self._toggle_click_through
+            ),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("显示窗口", lambda _: self._on_show_window()),
             pystray.MenuItem("退出", self._quit),
         )
@@ -439,6 +470,11 @@ class TrayIcon:
     def _toggle_sonar(self, icon, item):
         self._sonar_on = not self._sonar_on
         self._on_toggle_sonar(self._sonar_on)
+        self._icon.menu = self._build_menu()
+
+    def _toggle_click_through(self, icon, item):
+        self._click_through = not self._click_through
+        self._on_toggle_click_through(self._click_through)
         self._icon.menu = self._build_menu()
 
     def _quit(self, icon, item):
@@ -497,6 +533,8 @@ class TrafficLightApp:
             on_set_speed=self._set_blink_speed,
             on_toggle_sonar=self._toggle_sonar,
             on_show_window=self._show_window,
+            on_set_opacity=self._set_opacity,
+            on_toggle_click_through=self._toggle_click_through,
         )
         self.watcher = StatusWatcher(STATUS_FILE, self._on_status_change)
 
@@ -539,6 +577,12 @@ class TrafficLightApp:
     def _set_blink_speed(self, speed):
         multiplier = {"fast": 0.5, "medium": 1.0, "slow": 2.0}.get(speed, 1.0)
         self.tkinter_app.set_speed_multiplier(multiplier)
+
+    def _set_opacity(self, opacity):
+        self.tkinter_app.set_opacity(opacity)
+
+    def _toggle_click_through(self, enabled):
+        self.tkinter_app.set_click_through(enabled)
 
     def run(self):
         # Load initial status silently (no alert for stale state)
