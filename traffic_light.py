@@ -4,11 +4,13 @@ import os
 import threading
 import time
 import tkinter as tk
+import winsound
 
 import pystray
 from PIL import Image, ImageDraw
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from win10toast import ToastNotifier
 
 STATUS_FILE = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), ".claude-traffic-light-status.json")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".claude-traffic-light-config.json")
@@ -314,6 +316,39 @@ class TrayIcon:
 
     def stop(self):
         self._icon.stop()
+
+
+class Alerter:
+    def __init__(self):
+        self.sound_on = True
+        self.notification_on = True
+        self._toaster = ToastNotifier()
+        self._last_state = None
+
+    def alert(self, state, elapsed_text=""):
+        if state == self._last_state:
+            return
+        self._last_state = state
+
+        if state == "waiting":
+            if self.sound_on:
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            if self.notification_on:
+                self._toaster.show_toast(
+                    "Claude Code Traffic Light",
+                    "Claude Code 需要你的操作",
+                    duration=3, threaded=True
+                )
+        elif state == "done":
+            if self.sound_on:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+            if self.notification_on:
+                time_str = elapsed_text or "已结束"
+                self._toaster.show_toast(
+                    "Claude Code Traffic Light",
+                    f"Claude Code 编码完成，耗时 {time_str}",
+                    duration=3, threaded=True
+                )
 
 
 if __name__ == "__main__":
