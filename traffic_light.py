@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -47,7 +48,13 @@ def write_status(state, message=""):
         json.dump(data, f)
 
 
-SONAR_MP3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "0002869.mp3")
+def _resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+
+SONAR_MP3 = _resource_path("0002869.mp3")
 
 pygame.mixer.init()
 
@@ -108,7 +115,7 @@ class TkinterApp:
         self._scan_y = 0
 
         self._create_widgets()
-        self._position_window(default=True)
+        self._position_window(default=False)
 
         self._bind_drag_recursive(self.root)
 
@@ -359,12 +366,13 @@ class StatusWatcher(FileSystemEventHandler):
 
 class TrayIcon:
     def __init__(self, on_quit, on_toggle_sound, on_toggle_notification,
-                 on_set_speed, on_toggle_sonar):
+                 on_set_speed, on_toggle_sonar, on_show_window):
         self._on_quit = on_quit
         self._on_toggle_sound = on_toggle_sound
         self._on_toggle_notification = on_toggle_notification
         self._on_set_speed = on_set_speed
         self._on_toggle_sonar = on_toggle_sonar
+        self._on_show_window = on_show_window
         self._current_state = "coding"
         self._sound_on = True
         self._notification_on = True
@@ -407,6 +415,7 @@ class TrayIcon:
             pystray.MenuItem("闪烁速度: 中", lambda _: self._on_set_speed("medium")),
             pystray.MenuItem("闪烁速度: 慢", lambda _: self._on_set_speed("slow")),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("显示窗口", lambda _: self._on_show_window()),
             pystray.MenuItem("退出", self._quit),
         )
 
@@ -487,6 +496,7 @@ class TrafficLightApp:
             on_toggle_notification=self._toggle_notification,
             on_set_speed=self._set_blink_speed,
             on_toggle_sonar=self._toggle_sonar,
+            on_show_window=self._show_window,
         )
         self.watcher = StatusWatcher(STATUS_FILE, self._on_status_change)
 
@@ -549,6 +559,9 @@ class TrafficLightApp:
 
     def _minimize_to_tray(self):
         self.tkinter_app.root.withdraw()
+
+    def _show_window(self):
+        self.tkinter_app.root.deiconify()
 
     def quit(self):
         self.sonar.stop()
