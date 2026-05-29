@@ -274,17 +274,21 @@ class TkinterApp:
 
     def update_state(self, state):
         old_state = self._current_state
-        self._current_state = state
-        self._state_start = time.time()
-        if state == "coding" and (old_state is None or old_state == "done"):
-            self._session_start = time.time()
-        color = STATE_COLORS.get(state, "#00e676")
-        label = STATE_LABELS.get(state, "UNKNOWN")
-        self.canvas.itemconfig(self._diamond, fill=color)
-        self.canvas.itemconfig(self._diamond_ring, outline=self._dim_color(color, 0.25))
-        self.canvas.itemconfig(self._state_text, text=label, fill=color)
-        self.canvas.itemconfig(self._status_label, fill=self._dim_color(color, 0.45))
-        self._start_animation(state)
+        # Only reset timer when state actually changes
+        if state != old_state:
+            self._current_state = state
+            self._state_start = time.time()
+            if state == "coding" and (old_state is None or old_state == "done"):
+                self._session_start = time.time()
+            color = STATE_COLORS.get(state, "#00e676")
+            label = STATE_LABELS.get(state, "UNKNOWN")
+            self.canvas.itemconfig(self._diamond, fill=color)
+            self.canvas.itemconfig(self._diamond_ring, outline=self._dim_color(color, 0.25))
+            self.canvas.itemconfig(self._state_text, text=label, fill=color)
+            self.canvas.itemconfig(self._status_label, fill=self._dim_color(color, 0.45))
+            self._start_animation(state)
+            self._start_timer(state)
+            self._start_scan_line(color)
         self._start_timer(state)
         self._start_scan_line(color)
 
