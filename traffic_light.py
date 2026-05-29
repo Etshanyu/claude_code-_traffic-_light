@@ -54,7 +54,7 @@ def _resource_path(relative_path):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
 
 
-SONAR_MP3 = _resource_path("0002869.mp3")
+SONAR_FILE = _resource_path("submarine sonar_耳聆网.wav")
 
 pygame.mixer.init()
 
@@ -79,7 +79,7 @@ class SonarPlayer:
             return
         self._playing = True
         try:
-            pygame.mixer.music.load(SONAR_MP3)
+            pygame.mixer.music.load(SONAR_FILE)
             pygame.mixer.music.play(loops=-1)
         except pygame.error:
             self._playing = False
