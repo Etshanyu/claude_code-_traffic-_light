@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
+*.spec
 .superpowers/
 .claude/settings.local.json
+build/
+dist/
