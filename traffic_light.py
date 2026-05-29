@@ -1,9 +1,12 @@
 import json
 import math
 import os
+import threading
 import time
 import tkinter as tk
 
+import pystray
+from PIL import Image, ImageDraw
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -236,6 +239,81 @@ class StatusWatcher(FileSystemEventHandler):
     def stop(self):
         self._observer.stop()
         self._observer.join()
+
+
+class TrayIcon:
+    def __init__(self, on_quit, on_toggle_sound, on_toggle_notification,
+                 on_set_speed):
+        self._on_quit = on_quit
+        self._on_toggle_sound = on_toggle_sound
+        self._on_toggle_notification = on_toggle_notification
+        self._on_set_speed = on_set_speed
+        self._current_state = "coding"
+        self._sound_on = True
+        self._notification_on = True
+        self._icon = pystray.Icon(
+            "traffic_light",
+            self._create_icon_image("#27ae60"),
+            "Claude Code: 编码中",
+            menu=self._build_menu()
+        )
+
+    def _create_icon_image(self, color):
+        size = 64
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse([8, 8, size - 8, size - 8], fill=color)
+        return image
+
+    def _build_menu(self):
+        return pystray.Menu(
+            pystray.MenuItem(
+                lambda text: f"状态: {STATE_LABELS.get(self._current_state, '未知')}",
+                None, enabled=False
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                lambda text: f"声音: {'开启' if self._sound_on else '关闭'}",
+                self._toggle_sound
+            ),
+            pystray.MenuItem(
+                lambda text: f"通知: {'开启' if self._notification_on else '关闭'}",
+                self._toggle_notification
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("闪烁速度: 快", lambda _: self._on_set_speed("fast")),
+            pystray.MenuItem("闪烁速度: 中", lambda _: self._on_set_speed("medium")),
+            pystray.MenuItem("闪烁速度: 慢", lambda _: self._on_set_speed("slow")),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("退出", self._quit),
+        )
+
+    def update_state(self, state):
+        self._current_state = state
+        color = STATE_COLORS.get(state, "#999999")
+        self._icon.icon = self._create_icon_image(color)
+        self._icon.title = f"Claude Code: {STATE_LABELS.get(state, '未知')}"
+        self._icon.menu = self._build_menu()
+
+    def _toggle_sound(self, icon, item):
+        self._sound_on = not self._sound_on
+        self._on_toggle_sound(self._sound_on)
+        self._icon.menu = self._build_menu()
+
+    def _toggle_notification(self, icon, item):
+        self._notification_on = not self._notification_on
+        self._on_toggle_notification(self._notification_on)
+        self._icon.menu = self._build_menu()
+
+    def _quit(self, icon, item):
+        self._icon.stop()
+        self._on_quit()
+
+    def run(self):
+        self._icon.run()
+
+    def stop(self):
+        self._icon.stop()
 
 
 if __name__ == "__main__":
